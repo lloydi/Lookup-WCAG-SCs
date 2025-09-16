@@ -1,0 +1,11 @@
+<svg width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+  <!-- Horizontal sliders with controls -->
+  <rect x="2" y="4" width="16" height="1.5" fill="black"/>
+  <rect x="2" y="9.25" width="16" height="1.5" fill="black"/>
+  <rect x="2" y="14.5" width="16" height="1.5" fill="black"/>
+  
+  <!-- Slider knobs at different positions -->
+  <circle cx="12" cy="4.75" r="2" fill="black"/>
+  <circle cx="7" cy="10" r="2" fill="black"/>
+  <circle cx="14" cy="15.25" r="2" fill="black"/>
+</svg>
