@@ -1,20 +1,24 @@
 // Listen for messages from background script
 browser.runtime.onMessage.addListener((message) => {
   if (message.action === "toggleDialog") {
-    openDialog();
+    openDialog().catch(console.error);
   }
 });
 
 // Main function that creates or toggles the dialog
-function openDialog() {
+async function openDialog() {
   console.clear();
-  if (!window.wcagData) {
-    console.error('WCAG data not loaded. Make sure data-source.js is included before this script.');
+  if (!window.wcagData || !window.i18n) {
+    console.error('WCAG data not loaded. Make sure i18n.js and data-source.js are included before this script.');
     alert('WCAG data not available. Please ensure the extension is properly installed.');
     return;
   }
-  
+
   const wcagData = window.wcagData;
+
+  // "auto" (follow the computer/browser locale) or a language code chosen by the user.
+  // Loaded before anything else touches the page so the dialog is built in one go.
+  let languagePreference = await i18n.getPreference();
 
   // Check for and remove existing dialog
   const existingShadowHost = document.getElementById('a11y-tools-shadow-host');
@@ -99,7 +103,7 @@ function openDialog() {
 
     /* Basic styling for all elements */
     * {
-      font-family: Arial, sans-serif;
+      font-family: Arial, "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Yu Gothic UI", "Yu Gothic", Meiryo, sans-serif;
       color: inherit;
       background: transparent;
       text-decoration: none;
@@ -141,11 +145,45 @@ function openDialog() {
     }
 
     #a11y-tools-data-lookup h1 {
-      margin: 0 0 15px 0;
+      margin: 0;
       color: #333;
       font-size: 20px;
       font-weight: bold;
       line-height: 1.2;
+    }
+
+    .dialog-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 10px 20px;
+      flex-wrap: wrap;
+      margin: 0 0 15px 0;
+    }
+
+    .language-picker {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+    }
+
+    .language-picker label {
+      font-weight: bold;
+    }
+
+    #a11y-tools-data-lookup select {
+      background: white;
+      color: black;
+      border: 2px solid #007cba;
+      border-radius: 5px;
+      padding: 6px;
+      font-size: 14px;
+    }
+
+    #a11y-tools-data-lookup select:focus {
+      outline: 3px solid #007cba;
+      outline-offset: 3px;
     }
 
     #a11y-tools-data-lookup input[type="text"] {
@@ -462,7 +500,53 @@ function openDialog() {
     });
     element.setAttribute('tabindex', '-1');
   });
-  
+  // ---------------------------------------------------------------------------
+  // Language state
+  // ---------------------------------------------------------------------------
+  let currentLang = i18n.resolveLanguage(languagePreference);
+  const t = (key, params) => i18n.t(currentLang, key, params);
+
+  // Text-setting callbacks. bind() runs the callback now and again whenever the
+  // language changes, so every piece of UI text is defined in exactly one place.
+  const bindings = [];
+  function bind(fn) {
+    bindings.push(fn);
+    fn();
+  }
+
+  const normalise = (s) => String(s).normalize('NFKC').toLowerCase(); // NFKC: full-width "１.１.１" matches "1.1.1"
+  const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  // Language-specific view of the data (names, titles and the links to that language's documents)
+  function buildItems(lang) {
+    const defaultLang = i18n.defaultLanguage;
+    const sources = window.wcagSources || {};
+    const source = sources[lang] || sources[defaultLang];
+    return wcagData.map(sc => {
+      const slug = (sc.slugs && sc.slugs[lang]) || sc.slug;
+      const name = sc.names[lang] || sc.names[defaultLang];
+      const title = i18n.t(lang, 'scTitle', { num: sc.num, name: name });
+      const label = i18n.t(lang, 'scLabel', { num: sc.num, name: name });
+      // Also match the English name when browsing in another language
+      const searchText = lang === defaultLang ? title : title + ' ' + sc.names[defaultLang];
+      return {
+        id: sc.num,
+        level: sc.level,
+        version: sc.version,
+        category: sc.category,
+        shortTitle: sc.num + ' ' + name,
+        title: title,
+        label: label,
+        understandingLabel: i18n.t(lang, 'understandingLabel', { sc: label }),
+        url: source.normativeBase + '#' + slug,
+        understandingUrl: source.understandingBase + slug + source.understandingSuffix,
+        searchText: normalise(searchText)
+      };
+    });
+  }
+
+  let items = buildItems(currentLang);
+
   // Create modal backdrop inside shadow DOM
   const modalBackdrop = document.createElement('div');
   modalBackdrop.setAttribute('id', 'a11y-tools-modal-backdrop');
@@ -474,14 +558,71 @@ function openDialog() {
   }
   dialog.setAttribute('id', 'a11y-tools-data-lookup');
   dialog.setAttribute('aria-labelledby', 'a11y-tools-lookup-dialog-header');
-  
+  bind(() => dialog.setAttribute('lang', currentLang)); // so screen readers/fonts use the right language
+
+  // In the side panel we own the whole document, so keep its title and lang in step too.
+  // (Never touch the host page's document when running as an overlay.)
+  if (isFullPage) {
+    bind(() => {
+      document.documentElement.lang = currentLang;
+      document.title = t('pageTitle');
+    });
+  }
+
+  const header = document.createElement('div');
+  header.className = 'dialog-header';
+
   const title = document.createElement('h1');
-  title.textContent = 'Look up WCAG Success Criteria';
   title.setAttribute('id', 'a11y-tools-lookup-dialog-header');
-  
+  bind(() => { title.textContent = t('title'); });
+
+  // Language switcher
+  const languagePicker = document.createElement('div');
+  languagePicker.className = 'language-picker';
+
+  const languageLabel = document.createElement('label');
+  languageLabel.setAttribute('for', 'language-select');
+  bind(() => { languageLabel.textContent = t('language'); });
+
+  const languageSelect = document.createElement('select');
+  languageSelect.setAttribute('id', 'language-select');
+
+  function nativeName(code) {
+    return i18n.languages[code].nativeName;
+  }
+
+  // Rebuilt on every language change because the "Automatic (…)" label is itself translated
+  function populateLanguageSelect() {
+    languageSelect.innerHTML = '';
+    const auto = document.createElement('option');
+    auto.value = 'auto';
+    auto.textContent = t('languageAuto', { language: nativeName(i18n.detectLanguage()) });
+    auto.lang = currentLang;
+    languageSelect.appendChild(auto);
+    i18n.supported().forEach(code => {
+      const option = document.createElement('option');
+      option.value = code;
+      option.textContent = nativeName(code);
+      option.lang = code; // each language name is shown in (and announced as) its own language
+      languageSelect.appendChild(option);
+    });
+    languageSelect.value = languagePreference;
+  }
+  bind(populateLanguageSelect);
+
+  languageSelect.addEventListener('change', async () => {
+    languagePreference = languageSelect.value;
+    applyLanguage();
+    await i18n.setPreference(languagePreference);
+  });
+
+  languagePicker.appendChild(languageLabel);
+  languagePicker.appendChild(languageSelect);
+  header.appendChild(title);
+  header.appendChild(languagePicker);
+
   const input = document.createElement('input');
   input.type = 'text';
-  input.placeholder = 'Type to search/filter (e.g., "images", "keyboard", "1.1.1")...';
   input.setAttribute('spellcheck', 'false');
   input.setAttribute('role', 'combobox');
   input.setAttribute('aria-labelledby', 'a11y-tools-lookup-dialog-header');
@@ -489,11 +630,12 @@ function openDialog() {
   input.setAttribute('aria-expanded', 'false');
   input.setAttribute('aria-autocomplete', 'list');
   input.setAttribute('aria-describedby', 'search-hint filters-hint');
+  bind(() => { input.placeholder = t('searchPlaceholder'); });
   
   const filtersHint = document.createElement('div');
-  filtersHint.textContent = 'Filters for WCAG level and version are above this input';
   filtersHint.setAttribute('id','filters-hint');
   filtersHint.setAttribute('hidden','hidden');
+  bind(() => { filtersHint.textContent = t('filtersHint'); });
   
   const detailsEl = document.createElement('details');
   detailsEl.className = 'filters-disclosure';
@@ -507,7 +649,7 @@ function openDialog() {
   
   const filtersLabel = document.createElement('span');
   filtersLabel.className = 'filters-label';
-  filtersLabel.textContent='Filter by level/version';
+  bind(() => { filtersLabel.textContent = t('filtersLabel'); });
   summaryEl.appendChild(filtersLabel);
   
   
@@ -515,66 +657,41 @@ function openDialog() {
 
   const filtersContainer = document.createElement('div');
   filtersContainer.className = 'filters-container';
-  
-  const levelFieldset = document.createElement('fieldset');
-  levelFieldset.className = 'filter-fieldset';
-  
-  const levelLegend = document.createElement('legend');
-  levelLegend.textContent = 'Level:';
-  levelLegend.className = 'filter-legend';
-  
-  const levelOptions = ['All', 'A', 'AA', 'AAA'];
-  levelOptions.forEach((level, index) => {
-    const label = document.createElement('label');
-    label.className = 'filter-label';
-    
-    const radio = document.createElement('input');
-    radio.type = 'radio';
-    radio.name = 'level-filter';
-    radio.value = level;
-    radio.checked = level === 'All';
-    radio.className = 'filter-radio';
-    radio.onchange = () => performSearch(input.value);
-    
-    const text = document.createTextNode(level);
-    
-    label.appendChild(radio);
-    label.appendChild(text);
-    levelFieldset.appendChild(label);
-  });
-  
-  levelFieldset.appendChild(levelLegend);
-  levelFieldset.insertBefore(levelLegend, levelFieldset.firstChild);
-  
-  const versionFieldset = document.createElement('fieldset');
-  versionFieldset.className = 'filter-fieldset';
-  
-  const versionLegend = document.createElement('legend');
-  versionLegend.textContent = 'Version:';
-  versionLegend.className = 'filter-legend';
-  
-  const versionOptions = ['All', '2.0', '2.1', '2.2'];
-  versionOptions.forEach((version, index) => {
-    const label = document.createElement('label');
-    label.className = 'filter-label';
-    
-    const radio = document.createElement('input');
-    radio.type = 'radio';
-    radio.name = 'version-filter';
-    radio.value = version;
-    radio.checked = version === 'All';
-    radio.className = 'filter-radio';
-    radio.onchange = () => performSearch(input.value);
-    
-    const text = document.createTextNode(version);
-    
-    label.appendChild(radio);
-    label.appendChild(text);
-    versionFieldset.appendChild(label);
-  });
-  
-  versionFieldset.appendChild(versionLegend);
-  versionFieldset.insertBefore(versionLegend, versionFieldset.firstChild);
+
+  // Builds a fieldset of radio buttons; "All" is shown translated but keeps the value "All"
+  function createFilterFieldset(legendKey, radioName, options) {
+    const fieldset = document.createElement('fieldset');
+    fieldset.className = 'filter-fieldset';
+
+    const legend = document.createElement('legend');
+    legend.className = 'filter-legend';
+    bind(() => { legend.textContent = t(legendKey); });
+    fieldset.appendChild(legend);
+
+    options.forEach(option => {
+      const label = document.createElement('label');
+      label.className = 'filter-label';
+
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = radioName;
+      radio.value = option;
+      radio.checked = option === 'All';
+      radio.className = 'filter-radio';
+      radio.onchange = () => performSearch(input.value);
+
+      const text = document.createTextNode('');
+      bind(() => { text.nodeValue = option === 'All' ? t('all') : option; });
+
+      label.appendChild(radio);
+      label.appendChild(text);
+      fieldset.appendChild(label);
+    });
+    return fieldset;
+  }
+
+  const levelFieldset = createFilterFieldset('levelLegend', 'level-filter', ['All', 'A', 'AA', 'AAA']);
+  const versionFieldset = createFilterFieldset('versionLegend', 'version-filter', ['All', '2.0', '2.1', '2.2']);
   
   filtersContainer.appendChild(levelFieldset);
   filtersContainer.appendChild(versionFieldset);
@@ -583,14 +700,14 @@ function openDialog() {
   results.setAttribute('role', 'listbox');
   results.setAttribute('tabindex', '0');
   results.setAttribute('id', 'data-list');
-  results.setAttribute('aria-label', 'WCAG Success Criteria');
+  bind(() => { results.setAttribute('aria-label', t('listLabel')); });
   
   const selectionDiv = document.createElement('div');
   selectionDiv.setAttribute('id','selection-made');
   selectionDiv.setAttribute('tabindex','-1');
   
   const selectionTitle = document.createElement('strong');
-  selectionTitle.textContent = 'Selected:';
+  bind(() => { selectionTitle.textContent = t('selected'); });
   
   const selectionText = document.createElement('div');
   selectionText.className = 'selection-text';
@@ -606,6 +723,7 @@ function openDialog() {
   notificationPanel.setAttribute('id', 'notification-panel');
   notificationPanel.setAttribute('role', 'status');
   notificationPanel.setAttribute('aria-live', 'polite');
+  bind(() => { notificationPanel.setAttribute('lang', currentLang); });
   
   const notificationTitle = document.createElement('div');
   notificationTitle.className = 'notification-title';
@@ -638,79 +756,67 @@ function openDialog() {
   
   /* Action buttons */
 
+  function createButton(btn) {
+    const button = document.createElement('button');
+    button.classList.add('action-button');
+    button.classList.add(btn.class);
+    button.onclick = () => copyContent(btn.action);
+    bind(() => { button.textContent = t(btn.textKey, { key: btn.key }); });
+    return button;
+  }
+
   if (compactView) {
 
     const buttonsNormative = [
-      { text: 'Copy Markdown [1]', key: '1', action: 'copyNormativeMarkdownLink', class: 'normative' },
-      { text: 'Copy HTML [2]', key: '2', action: 'copyNormativeHTMLLink', class: 'normative' },
-      { text: 'Go to page (3)', key: '3', action: 'goToNormativeDoc', class: 'normative' }
+      { textKey: 'copyMarkdown', key: '1', action: 'copyNormativeMarkdownLink', class: 'normative' },
+      { textKey: 'copyHtml', key: '2', action: 'copyNormativeHTMLLink', class: 'normative' },
+      { textKey: 'goToPage', key: '3', action: 'goToNormativeDoc', class: 'normative' }
     ];
 
     const fieldsetNormative = document.createElement('fieldset');
     const legendNormative = document.createElement('legend');
-    legendNormative.textContent = 'Normative docs:';
+    bind(() => { legendNormative.textContent = t('normativeLegend'); });
     fieldsetNormative.appendChild(legendNormative);
     buttonsDiv.appendChild(fieldsetNormative);
 
-    buttonsNormative.forEach(btn => {
-      const button = document.createElement('button');
-      button.textContent = btn.text;
-      button.classList.add('action-button');
-      button.classList.add(btn.class);
-      button.onclick = () => copyContent(btn.action);
-      fieldsetNormative.appendChild(button);
-    });
+    buttonsNormative.forEach(btn => fieldsetNormative.appendChild(createButton(btn)));
 
     const buttonsUnderstanding = [
-      { text: 'Copy Markdown [4]', key: '4', action: 'copyUnderstandingMarkdownLink', class: 'understanding' },
-      { text: 'Copy HTML [5]', key: '5', action: 'copyUnderstandingHTMLLink', class: 'understanding' },
-      { text: 'Go to page (6)', key: '6', action: 'goToUnderstandingDoc', class: 'understanding' },
+      { textKey: 'copyMarkdown', key: '4', action: 'copyUnderstandingMarkdownLink', class: 'understanding' },
+      { textKey: 'copyHtml', key: '5', action: 'copyUnderstandingHTMLLink', class: 'understanding' },
+      { textKey: 'goToPage', key: '6', action: 'goToUnderstandingDoc', class: 'understanding' },
     ];
 
     const fieldsetUnderstanding = document.createElement('fieldset');
     const legendUnderstanding = document.createElement('legend');
-    legendUnderstanding.textContent = 'Understanding docs:';
+    bind(() => { legendUnderstanding.textContent = t('understandingLegend'); });
     fieldsetUnderstanding.appendChild(legendUnderstanding);
     buttonsDiv.appendChild(fieldsetUnderstanding);
 
-    buttonsUnderstanding.forEach(btn => {
-      const button = document.createElement('button');
-      button.textContent = btn.text;
-      button.classList.add('action-button');
-      button.classList.add(btn.class);
-      button.onclick = () => copyContent(btn.action);
-      fieldsetUnderstanding.appendChild(button);
-    });
+    buttonsUnderstanding.forEach(btn => fieldsetUnderstanding.appendChild(createButton(btn)));
 
   } else {
 
     const buttons = [
-      { text: 'Copy Normative doc as Markdown Link (1)', key: '1', action: 'copyNormativeMarkdownLink', class: 'normative' },
-      { text: 'Copy Normative doc as HTML Link (2)', key: '2', action: 'copyNormativeHTMLLink', class: 'normative' },
-      { text: 'Go to Normative doc (3)', key: '3', action: 'goToNormativeDoc', class: 'normative' },
-      { text: 'Copy Understanding doc as Markdown Link (4)', key: '4', action: 'copyUnderstandingMarkdownLink', class: 'understanding' },
-      { text: 'Copy Understanding doc as HTML Link (5)', key: '5', action: 'copyUnderstandingHTMLLink', class: 'understanding' },
-      { text: 'Go to Understanding doc (6)', key: '6', action: 'goToUnderstandingDoc', class: 'understanding' },
+      { textKey: 'copyNormativeMarkdownLong', key: '1', action: 'copyNormativeMarkdownLink', class: 'normative' },
+      { textKey: 'copyNormativeHtmlLong', key: '2', action: 'copyNormativeHTMLLink', class: 'normative' },
+      { textKey: 'goToNormativeLong', key: '3', action: 'goToNormativeDoc', class: 'normative' },
+      { textKey: 'copyUnderstandingMarkdownLong', key: '4', action: 'copyUnderstandingMarkdownLink', class: 'understanding' },
+      { textKey: 'copyUnderstandingHtmlLong', key: '5', action: 'copyUnderstandingHTMLLink', class: 'understanding' },
+      { textKey: 'goToUnderstandingLong', key: '6', action: 'goToUnderstandingDoc', class: 'understanding' },
     ];
     
-    buttons.forEach(btn => {
-      const button = document.createElement('button');
-      button.textContent = btn.text;
-      button.className = 'action-button';
-      button.classList.add(btn.class);
-      button.onclick = () => copyContent(btn.action);
-      buttonsDiv.appendChild(button);
-    });
+    buttons.forEach(btn => buttonsDiv.appendChild(createButton(btn)));
 
   }
 
   const closeBtn = document.createElement('button');
-  closeBtn.textContent = 'Close (Escape)';
   closeBtn.className = 'secondary-button';
+  bind(() => { closeBtn.textContent = t('close'); });
 
   const startAgainBtn = document.createElement('button');
-  startAgainBtn.textContent = 'Start again';
   startAgainBtn.className = 'secondary-button';
+  bind(() => { startAgainBtn.textContent = t('startAgain'); });
   
   function startAgain(){
     results.setAttribute('tabindex', '0');
@@ -767,7 +873,7 @@ function openDialog() {
   
   // Trap focus within dialog
   function trapFocus(e) {
-    const focusableElements = dialog.querySelectorAll('input, button, [tabindex]:not([tabindex="-1"])');
+    const focusableElements = dialog.querySelectorAll('input, select, button, [tabindex]:not([tabindex="-1"])');
     const firstFocusable = focusableElements[0];
     const lastFocusable = focusableElements[focusableElements.length - 1];
     
@@ -790,12 +896,12 @@ function openDialog() {
     const selectedLevel = shadowRoot.querySelector('input[name="level-filter"]:checked')?.value || 'All';
     const selectedVersion = shadowRoot.querySelector('input[name="version-filter"]:checked')?.value || 'All';
     
-    let filtered = wcagData.filter(item => {
+    let filtered = items.filter(item => {
       // Enhanced search logic
       let matchesSearch = true;
       if (query.length > 0) {
-        const searchQuery = query.toLowerCase().trim();
-        const itemTitle = item.title.toLowerCase();
+        const searchQuery = normalise(query).trim();
+        const itemTitle = item.searchText;
         
         // If it's an exact substring match (original behavior), return true immediately
         if (itemTitle.includes(searchQuery)) {
@@ -832,7 +938,7 @@ function openDialog() {
     
     if (filtered.length === 0) {
       const noResults = document.createElement('li');
-      noResults.textContent = 'No WCAG SC found that matches this filtering';
+      noResults.textContent = t('noResults');
       noResults.style.cssText = 'padding: 10px; color: #666; font-style: italic;';
       results.appendChild(noResults);
       return;
@@ -843,10 +949,9 @@ function openDialog() {
       li.setAttribute('role', 'option');
       li.setAttribute('id', `option-${index}`);
       const strClass = item.category;
-      li.innerHTML = '<span style="font-weight:bold">' + item.title.replace('WCAG 2.2 Success Criterion ', '') + '</span> <span>(Level ' + item.level + ')</span> <span class="version ' + strClass + '">' + item.version + '</span> <span class="category ' + strClass + '">' + item.category + '</span>';
+      li.innerHTML = '<span style="font-weight:bold">' + escapeHtml(item.shortTitle) + '</span> <span>' + escapeHtml(t('levelBadge', { level: item.level })) + '</span> <span class="version ' + strClass + '">' + escapeHtml(item.version) + '</span> <span class="category ' + strClass + '">' + escapeHtml(t('category.' + item.category)) + '</span>';
       li.dataset.index = index;
-      li.dataset.url = item.url;
-      li.dataset.title = item.title;
+      li.dataset.id = item.id;
       
       li.onmouseenter = () => {
         currentSelection = index;
@@ -878,39 +983,54 @@ function openDialog() {
   function showSelectedItem(item) {
     results.setAttribute('tabindex', '-1');
     selectedItem = item;
-    // const cleanedTitle = item.title.replace('WCAG 2.2 Success Criterion ', 'SC ');
-    const cleanedTitle = item.title;
-    selectionText.textContent = cleanedTitle;
+    selectionText.textContent = item.title;
     selectionDiv.style.display = 'block';
     selectionDiv.focus();
     buttonsDiv.style.display = 'flex';
     startAgainBtn.style.display = 'block';
-    input.value = cleanedTitle;
+    input.value = item.title;
     results.innerHTML = '';
     input.setAttribute('aria-expanded', 'false');
+  }
+
+  // Re-render everything in the (possibly newly chosen) language, keeping the user's place
+  function applyLanguage() {
+    currentLang = i18n.resolveLanguage(languagePreference);
+    items = buildItems(currentLang);
+    bindings.forEach(fn => fn());
+
+    if (selectedItem) {
+      const sameItem = items.find(item => item.id === selectedItem.id);
+      selectedItem = sameItem;
+      selectionText.textContent = sameItem.title;
+      input.value = sameItem.title;
+    } else {
+      performSearch(input.value);
+    }
   }
   
   function copyContent(action) {
     if (!selectedItem) return;
     
-    const cleanedTitle = selectedItem.title.replace('WCAG 2.2 Success Criterion ', 'SC ');
+    const label = selectedItem.label;
+    const understandingLabel = selectedItem.understandingLabel;
     let content;
     
     switch(action) {
       case 'copyNormativeMarkdownLink':
-        content = `[${cleanedTitle}](${selectedItem.url})`;
+        content = `[${label}](${selectedItem.url})`;
         break;
       case 'copyNormativeHTMLLink':
-        content = `<a href="${selectedItem.url}">${cleanedTitle}</a>`;
+        content = `<a href="${selectedItem.url}">${label}</a>`;
         break;
       case 'goToNormativeDoc':
         window.open(selectedItem.url, '_blank');
         return;
       case 'copyUnderstandingMarkdownLink':
-        content = `[Understanding ${cleanedTitle}](${selectedItem.understandingUrl})`;
+        content = `[${understandingLabel}](${selectedItem.understandingUrl})`;
         break;
       case 'copyUnderstandingHTMLLink':
-        content = `<a href="${selectedItem.understandingUrl}">Understanding ${cleanedTitle}</a>`;
+        content = `<a href="${selectedItem.understandingUrl}">${understandingLabel}</a>`;
         break;
       case 'goToUnderstandingDoc':
         window.open(selectedItem.understandingUrl, '_blank');
@@ -918,10 +1038,10 @@ function openDialog() {
     }
     
     navigator.clipboard.writeText(content).then(() => {
-      showNotification('Copied to clipboard!', content);
+      showNotification(t('copied'), content);
     }).catch(() => {
       console.log(content);
-      showNotification('Could not copy to clipboard', 'Details pasted to console');
+      showNotification(t('copyFailed'), t('copyFailedDetail'));
     });
   }
   
@@ -975,10 +1095,12 @@ function openDialog() {
         break;
         
       case 'Enter':
+        // Ignore Enter while an IME (e.g. Japanese input) is confirming a composition
+        if (e.isComposing) break;
         e.preventDefault();
         if (currentSelection >= 0 && options[currentSelection]) {
           const option = options[currentSelection];
-          const item = wcagData.find(item => item.url === option.dataset.url);
+          const item = items.find(item => item.id === option.dataset.id);
           if (item) showSelectedItem(item);
         }
         break;
@@ -1006,8 +1128,8 @@ function openDialog() {
     
     // Only handle number keys 1-6 for button actions when:
     // 1. An item is selected
-    // 2. The input field does NOT have focus
-    if (selectedItem && e.key >= '1' && e.key <= '6' && shadowRoot.activeElement !== input) {
+    // 2. Neither the input field nor the language selector has focus
+    if (selectedItem && e.key >= '1' && e.key <= '6' && shadowRoot.activeElement !== input && shadowRoot.activeElement !== languageSelect) {
       e.preventDefault();
       const actions = ['copyNormativeMarkdownLink', 'copyNormativeHTMLLink', 'goToNormativeDoc', 'copyUnderstandingMarkdownLink', 'copyUnderstandingHTMLLink', 'goToUnderstandingDoc'];
       copyContent(actions[parseInt(e.key) - 1]);
@@ -1015,7 +1137,7 @@ function openDialog() {
   });
   
   // Build the dialog
-  dialog.appendChild(title);
+  dialog.appendChild(header);
 
   if (compactView) {
     dialog.appendChild(detailsEl);

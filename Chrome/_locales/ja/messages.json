@@ -1,0 +1,11 @@
+{
+  "extName": {
+    "message": "WCAG 達成基準の検索 (Look up WCAG SCs)"
+  },
+  "extDescription": {
+    "message": "WCAG 達成基準を番号または名前で素早く検索し、リンクを Markdown / HTML 形式でコピーできます"
+  },
+  "actionTitle": {
+    "message": "WCAG 達成基準を検索"
+  }
+}

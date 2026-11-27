@@ -1,12 +1,14 @@
 {
   "manifest_version": 3,
-  "name": "Look up WCAG SCs (WCAG Success Criteria)",
-  "description": "Provides a quick and easy way to look up WCAG Success Criteria - search by the SC number or name, then copy the URL as markdown/HTML",
+  "default_locale": "en",
+  "name": "__MSG_extName__",
+  "description": "__MSG_extDescription__",
   "version": "2.0.3",
   "permissions": [
     "scripting",
     "activeTab",
-    "sidePanel"
+    "sidePanel",
+    "storage"
   ],
   "background": {
     "service_worker": "background.js"
@@ -15,7 +17,7 @@
     "default_path": "sidepanel.html"
   },
   "action": {
-    "default_title": "Look up WCAG Success Criteria"
+    "default_title": "__MSG_actionTitle__"
   },
   "icons": {
     "16": "icon16.png",

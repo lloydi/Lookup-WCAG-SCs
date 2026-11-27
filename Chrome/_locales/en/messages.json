@@ -1,0 +1,11 @@
+{
+  "extName": {
+    "message": "Look up WCAG SCs (WCAG Success Criteria)"
+  },
+  "extDescription": {
+    "message": "Provides a quick and easy way to look up WCAG Success Criteria - search by the SC number or name, then copy the URL as markdown/HTML"
+  },
+  "actionTitle": {
+    "message": "Look up WCAG Success Criteria"
+  }
+}
